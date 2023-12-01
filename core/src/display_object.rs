@@ -1242,7 +1242,6 @@ pub trait TDisplayObject<'gc>:
     /// If the object has zero scale, then the stage `TWIPS_TO_PIXELS` matrix will be used.
     /// This matches Flash's behavior for `mouseX`/`mouseY` on an object with zero scale.
     fn local_mouse_position(&self, context: &UpdateContext<'_, 'gc>) -> Point<Twips> {
-
         let stage = context.stage;
         let pixel_ratio = stage.view_matrix().a;
 
@@ -1255,8 +1254,11 @@ pub trait TDisplayObject<'gc>:
         // Make transformation matrix
         let local_twips_to_global_twips = self.local_to_global_matrix();
         let twips_to_device_pixels = Matrix::scale(pixel_ratio / 20.0, pixel_ratio / 20.0);
-        let local_twips_to_global_device_pixels = twips_to_device_pixels * local_twips_to_global_twips;
-        let global_device_pixels_to_local_twips = local_twips_to_global_device_pixels.inverse().unwrap_or(Matrix::IDENTITY);
+        let local_twips_to_global_device_pixels =
+            twips_to_device_pixels * local_twips_to_global_twips;
+        let global_device_pixels_to_local_twips = local_twips_to_global_device_pixels
+            .inverse()
+            .unwrap_or(Matrix::IDENTITY);
 
         // Transform mouse position
         let local_twips = global_device_pixels_to_local_twips * global_device_pixels;
