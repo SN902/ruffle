@@ -1082,6 +1082,7 @@ async fn request_device(
     // more powerful hardware or capabilities
     limits = limits.using_resolution(adapter.limits());
     limits = limits.using_alignment(adapter.limits());
+    limits.max_uniform_buffer_binding_size = adapter.limits().max_uniform_buffer_binding_size;
 
     let mut features = Default::default();
 
