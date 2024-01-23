@@ -1,13 +1,13 @@
 use crate::buffer_builder::BufferBuilder;
 use crate::buffer_pool::{BufferPool, TexturePool};
 use crate::context3d::WgpuContext3D;
+use crate::dynamic_transforms::DynamicTransforms;
 use crate::filters::FilterSource;
 use crate::mesh::{Mesh, PendingDraw};
 use crate::pixel_bender::{run_pixelbender_shader_impl, ShaderMode};
 use crate::surface::{LayerRef, Surface};
 use crate::target::{MaybeOwnedBuffer, TextureTarget};
 use crate::target::{RenderTargetFrame, TextureBufferInfo};
-use crate::uniform_buffer::{BufferStorage, UniformBuffer};
 use crate::utils::{run_copy_pipeline, BufferDimensions};
 use crate::{
     as_texture, format_list, get_backend_names, ColorAdjustments, Descriptors, Error,
@@ -43,8 +43,7 @@ const TEXTURE_READS_BEFORE_PROMOTION: u8 = 5;
 
 pub struct WgpuRenderBackend<T: RenderTarget> {
     pub(crate) descriptors: Arc<Descriptors>,
-    uniform_buffers_storage: BufferStorage<Transforms>,
-    color_buffers_storage: BufferStorage<ColorAdjustments>,
+    staging_belt: wgpu::util::StagingBelt,
     target: T,
     surface: Surface,
     meshes: Vec<Mesh>,
@@ -55,6 +54,7 @@ pub struct WgpuRenderBackend<T: RenderTarget> {
     texture_pool: TexturePool,
     offscreen_texture_pool: TexturePool,
     pub(crate) offscreen_buffer_pool: Arc<BufferPool<wgpu::Buffer, BufferDimensions>>,
+    dynamic_transforms: DynamicTransforms,
 }
 
 impl WgpuRenderBackend<SwapChainTarget> {
@@ -205,12 +205,6 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             target.format(),
         );
 
-        let uniform_buffers_storage =
-            BufferStorage::from_alignment(descriptors.limits.min_uniform_buffer_offset_alignment);
-
-        let color_buffers_storage =
-            BufferStorage::from_alignment(descriptors.limits.min_uniform_buffer_offset_alignment);
-
         let offscreen_buffer_pool = BufferPool::new(Box::new(
             |descriptors: &Descriptors, dimensions: &BufferDimensions| {
                 descriptors.device.create_buffer(&wgpu::BufferDescriptor {
@@ -222,10 +216,11 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             },
         ));
 
+        let transforms = DynamicTransforms::new(&descriptors);
+
         Ok(Self {
             descriptors,
-            uniform_buffers_storage,
-            color_buffers_storage,
+            staging_belt: wgpu::util::StagingBelt::new(65536),
             target,
             surface,
             meshes: Vec::new(),
@@ -234,6 +229,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             texture_pool: TexturePool::new(),
             offscreen_texture_pool: TexturePool::new(),
             offscreen_buffer_pool: Arc::new(offscreen_buffer_pool),
+            dynamic_transforms: transforms,
         })
     }
 
@@ -526,8 +522,6 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         };
 
         let uniform_encoder_label = create_debug_label!("Uniform upload command encoder");
-        let mut uniform_buffer = UniformBuffer::new(&mut self.uniform_buffers_storage);
-        let mut color_buffer = UniformBuffer::new(&mut self.color_buffers_storage);
         let mut uniform_encoder =
             self.descriptors
                 .device
@@ -565,8 +559,8 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                     &self.descriptors,
                     &self.meshes,
                     entry.commands,
-                    &mut uniform_buffer,
-                    &mut color_buffer,
+                    &mut self.staging_belt,
+                    &self.dynamic_transforms,
                     &mut uniform_encoder,
                     &mut draw_encoder,
                     LayerRef::None,
@@ -590,8 +584,8 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                     &self.descriptors,
                     &self.meshes,
                     entry.commands,
-                    &mut uniform_buffer,
-                    &mut color_buffer,
+                    &mut self.staging_belt,
+                    &self.dynamic_transforms,
                     &mut uniform_encoder,
                     &mut draw_encoder,
                     LayerRef::None,
@@ -630,8 +624,8 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                 a: f64::from(clear.a) / 255.0,
             }),
             &self.descriptors,
-            &mut uniform_buffer,
-            &mut color_buffer,
+            &mut self.staging_belt,
+            &self.dynamic_transforms,
             &mut uniform_encoder,
             &mut draw_encoder,
             &self.meshes,
@@ -639,8 +633,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             LayerRef::None,
             &mut self.texture_pool,
         );
-        uniform_buffer.finish();
-        color_buffer.finish();
+        self.staging_belt.finish();
 
         self.target.submit(
             &self.descriptors.device,
@@ -648,8 +641,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             vec![uniform_encoder.finish(), draw_encoder.finish()],
             frame_output,
         );
-        self.uniform_buffers_storage.recall();
-        self.color_buffers_storage.recall();
+        self.staging_belt.recall();
         self.offscreen_texture_pool = TexturePool::new();
     }
 
@@ -792,8 +784,6 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             wgpu::TextureFormat::Rgba8Unorm,
         );
         let uniform_encoder_label = create_debug_label!("Uniform upload command encoder");
-        let mut uniform_buffer = UniformBuffer::new(&mut self.uniform_buffers_storage);
-        let mut color_buffer = UniformBuffer::new(&mut self.color_buffers_storage);
         let mut uniform_encoder =
             self.descriptors
                 .device
@@ -811,8 +801,8 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             frame_output.view(),
             RenderTargetMode::FreshWithTexture(target.get_texture()),
             &self.descriptors,
-            &mut uniform_buffer,
-            &mut color_buffer,
+            &mut self.staging_belt,
+            &self.dynamic_transforms,
             &mut uniform_encoder,
             &mut draw_encoder,
             &self.meshes,
@@ -820,16 +810,14 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             LayerRef::Current,
             &mut self.offscreen_texture_pool,
         );
-        uniform_buffer.finish();
-        color_buffer.finish();
+        self.staging_belt.finish();
         let index = target.submit(
             &self.descriptors.device,
             &self.descriptors.queue,
             vec![uniform_encoder.finish(), draw_encoder.finish()],
             frame_output,
         );
-        self.uniform_buffers_storage.recall();
-        self.color_buffers_storage.recall();
+        self.staging_belt.recall();
 
         Some(self.make_queue_sync_handle(target, index, handle, bounds))
     }
@@ -1103,8 +1091,8 @@ async fn request_device(
     if adapter.features().contains(wgpu::Features::PUSH_CONSTANTS)
         && adapter.limits().max_push_constant_size >= needed_size
     {
-        limits.max_push_constant_size = needed_size;
-        features |= wgpu::Features::PUSH_CONSTANTS;
+        // limits.max_push_constant_size = needed_size;
+        // features |= wgpu::Features::PUSH_CONSTANTS;
     }
 
     let try_features = [
