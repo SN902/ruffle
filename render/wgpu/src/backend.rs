@@ -520,13 +520,6 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             }
         };
 
-        let uniform_encoder_label = create_debug_label!("Uniform upload command encoder");
-        let mut uniform_encoder =
-            self.descriptors
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: uniform_encoder_label.as_deref(),
-                });
         let label = create_debug_label!("Draw encoder");
         let mut draw_encoder =
             self.descriptors
@@ -560,7 +553,6 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                     entry.commands,
                     &mut self.staging_belt,
                     &self.dynamic_transforms,
-                    &mut uniform_encoder,
                     &mut draw_encoder,
                     LayerRef::None,
                     &mut self.offscreen_texture_pool,
@@ -585,7 +577,6 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                     entry.commands,
                     &mut self.staging_belt,
                     &self.dynamic_transforms,
-                    &mut uniform_encoder,
                     &mut draw_encoder,
                     LayerRef::None,
                     &mut self.offscreen_texture_pool,
@@ -624,7 +615,6 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             &self.descriptors,
             &mut self.staging_belt,
             &self.dynamic_transforms,
-            &mut uniform_encoder,
             &mut draw_encoder,
             &self.meshes,
             commands,
@@ -636,7 +626,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         self.target.submit(
             &self.descriptors.device,
             &self.descriptors.queue,
-            vec![uniform_encoder.finish(), draw_encoder.finish()],
+            Some(draw_encoder.finish()),
             frame_output,
         );
         self.staging_belt.recall();
@@ -781,13 +771,6 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             texture.texture.height(),
             wgpu::TextureFormat::Rgba8Unorm,
         );
-        let uniform_encoder_label = create_debug_label!("Uniform upload command encoder");
-        let mut uniform_encoder =
-            self.descriptors
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: uniform_encoder_label.as_deref(),
-                });
         let label = create_debug_label!("Draw encoder");
         let mut draw_encoder =
             self.descriptors
@@ -801,7 +784,6 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             &self.descriptors,
             &mut self.staging_belt,
             &self.dynamic_transforms,
-            &mut uniform_encoder,
             &mut draw_encoder,
             &self.meshes,
             commands,
@@ -812,7 +794,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         let index = target.submit(
             &self.descriptors.device,
             &self.descriptors.queue,
-            vec![uniform_encoder.finish(), draw_encoder.finish()],
+            Some(draw_encoder.finish()),
             frame_output,
         );
         self.staging_belt.recall();
