@@ -105,7 +105,79 @@ impl<'gc> AvmString<'gc> {
         } else if right.is_empty() {
             left
         } else {
-            let mut out = WString::from(left.as_wstr());
+            // note: we could also in-place append a byte string to a wide string
+            // But it was skipped for now.
+
+            if left.is_wide() == right.is_wide() {
+                let left_origin_s = left.owner().unwrap_or(left);
+                if let (Source::Owned(left), Source::Owned(left_origin)) = (left.source, left_origin_s.source) {
+                    let char_size = if left.is_wide() { 2 } else { 1 };
+                    /*
+                        assumptions:
+                        - left.len <= left.chars_used <= left.capacity
+                        - left_ptr is inside left_origin_ptr .. left_origin_ptr + left.chars_used
+
+                        note: it's possible that left == left_origin.
+                    */
+                    unsafe {
+                        let left_origin_ptr = left_origin.raw_ptr() as *const u8;
+                        let left_ptr = left_origin.raw_ptr() as *const u8;
+
+                        /*
+                        Assume a="abc", b=a+"d", c=a.substr(1), we're running d=c+"e"
+
+                        a          ->  abc
+                        b          ->  abcd
+                        c          ->   bc        v left_capacity_end
+                        a's memory ->  abcd_______
+                                          ^ first_requested
+                                           ^ first_available
+
+                        We can only append in-place if first_requested and first_available match
+                        And we have enough spare capacity.
+                        */
+
+                        let first_available = left_origin_ptr.add(char_size * left_origin.chars_used() as usize);
+                        let first_requested = left_ptr.add(char_size * left.len() as usize);
+
+                        let mut chars_available = 0;
+                        if first_available == first_requested {
+                            let left_capacity_end = left_origin_ptr.add(char_size * left_origin.capacity() as usize);
+                            chars_available = ((left_capacity_end as usize) - (first_available as usize)) / char_size;
+                        }
+                        if chars_available >= right.len() {
+                            let first_available = first_available as *mut u8;
+                            let right_ptr = right.as_wstr() as *const WStr as *const () as *const u8;
+                            std::ptr::copy_nonoverlapping(right_ptr, first_available, char_size * right.len());
+
+                            // TODO: usize/u32 safety? range safety?
+                            left_origin.set_chars_used(left_origin.chars_used() + right.len() as u32);
+
+                            let repr = AvmStringRepr::new_dependent_raw(left_origin_s, left_ptr, (left.len()+right.len()) as u32, left.is_wide());
+                            return Self {
+                                source: Source::Owned(Gc::new(gc_context, repr)),
+                            };
+                        }
+                    }
+                }
+            }
+
+            // When doing a non-in-place append,
+            // Overallocate a bit so that further appends can be in-place.
+            // (Note that this means that all first-time appends will happen here and
+            // overallocate, even if done only once)
+            // This growth logic should be equivalent to AVM's, except I capped the growth at 1MB instead of 4MB.
+            let new_size = left.len() + right.len();
+            let new_capacity = if new_size < 32 {
+                32
+            } else if new_size > 1024*1024 {
+                new_size + 1024*1024
+            } else {
+                new_size * 2
+            };
+
+            let mut out = WString::with_capacity(new_capacity, left.is_wide() || right.is_wide());
+            out.push_str(&left);
             out.push_str(&right);
             Self::new(gc_context, out)
         }
