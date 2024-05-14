@@ -16,12 +16,22 @@ pub struct AvmStringRepr<'gc> {
     #[collect(require_static)]
     ptr: *mut (),
 
+    // Length and is_wide bit.
     #[collect(require_static)]
     meta: wptr::WStrMetadata,
 
-    // We abuse the 'is_wide' bit for interning.
+    // We abuse WStrMetadata to store capacity and is_interned bit.
+    // If a string is Dependent, the capacity should always be 0.
     #[collect(require_static)]
     capacity: Cell<wptr::WStrMetadata>,
+
+    // If a string is Dependent, this should always be 0.
+    // If a string is Owned, this indicates used chars, including dependents.
+    // Example: assume a string a="abc" has 10 bytes of capacity (chars_used=3).
+    // Then, with a+"d", we produce a dependent string and owner's chars_used becomes 4.
+    // len <= chars_used <= capacity.
+    #[collect(require_static)]
+    chars_used: Cell<u32>,
 
     // If Some, the string is dependent. The owner is assumed to be non-dynamic.
     owner: Option<AvmString<'gc>>,
@@ -35,6 +45,7 @@ impl<'gc> AvmStringRepr<'gc> {
             ptr,
             meta,
             capacity,
+            chars_used: Cell::new(meta.len32()),
             owner: None,
         }
     }
@@ -45,7 +56,7 @@ impl<'gc> AvmStringRepr<'gc> {
 
         let meta = unsafe { wptr::WStrMetadata::of(wstr_ptr) };
         // Dependent strings are never interned
-        let capacity = Cell::new(wptr::WStrMetadata::new32(meta.len32(), false));
+        let capacity = Cell::new(wptr::WStrMetadata::new32(0, false));
         let ptr = wstr_ptr as *mut WStr as *mut ();
 
         let owner = if let Some(owner) = s.owner() {
@@ -58,6 +69,22 @@ impl<'gc> AvmStringRepr<'gc> {
             owner: Some(owner),
             ptr,
             meta,
+            chars_used: Cell::new(0),
+            capacity,
+        }
+    }
+
+    pub unsafe fn new_dependent_raw(owner: AvmString<'gc>, ptr: *const u8, length: u32, is_wide: bool) -> Self {
+        let meta = wptr::WStrMetadata::new32(length, is_wide);
+        // Dependent strings are never interned
+        let capacity = Cell::new(wptr::WStrMetadata::new32(0, false));
+        let ptr = ptr as *mut ();
+
+        Self {
+            owner: Some(owner),
+            ptr,
+            meta,
+            chars_used: Cell::new(0),
             capacity,
         }
     }
@@ -89,6 +116,22 @@ impl<'gc> AvmStringRepr<'gc> {
         let cap = self.capacity.get();
         let new_cap = wptr::WStrMetadata::new32(cap.len32(), true);
         self.capacity.set(new_cap);
+    }
+
+    pub fn raw_ptr(&self) -> *mut () {
+        self.ptr
+    }
+
+    pub fn capacity(&self) -> u32 {
+        self.capacity.get().len32()
+    }
+
+    pub fn chars_used(&self) -> u32 {
+        self.chars_used.get()
+    }
+
+    pub fn set_chars_used(&self, value: u32) {
+        self.chars_used.set(value);
     }
 }
 
